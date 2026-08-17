@@ -1,17 +1,10 @@
-const width  = window.innerWidth;
-const height = window.innerHeight * 4; // more vertical breathing room
-const margin = { top: 50, right: 50, bottom: 50, left: 80 };
-
-// --- Radius range ---
-// scalePow with exponent 2 makes the size difference between low- and
-// high-influence nodes dramatically more visible than sqrt.
-const minRadius     = 10;
-const maxRadius     = 52;
+const laneHeight = 100;
+const sidebarWidth = 160;
+const bottomBarHeight = 66;
+const nodeRadius = 16;
 const expandedRadius = 38;
-const textPadding   = 44;
-
-const detailsWidth  = 230;
-let detailsHeight   = 140;
+const textPadding = 44;
+const detailsWidth = 230;
 
 // --- Org colour palette ---
 const orgColors = {
@@ -34,9 +27,30 @@ const orgColors = {
 };
 const defaultOrgColor = "#90a4ae";
 
+const orgAlias = {
+  "CMU&Google":            "Google",
+  "Google&Princeton":      "Google",
+  "UW–Madison&Microsoft":  "Microsoft",
+  "Microsoft&NVIDIA":      "Microsoft",
+  "CMU et al.":            "Stanford",
+  "CMU&Princeton":         "Stanford",
+  "HuggingFace et al.":    "HuggingFace",
+  "King Abdullah University": "Stanford",
+  "Tsinghua":              "Stanford",
+};
+
+function canonicalOrg(raw) {
+  if (orgAlias[raw]) return orgAlias[raw];
+  for (const key of Object.keys(orgAlias)) {
+    if (raw && raw.includes(key)) return orgAlias[key];
+  }
+  return raw;
+}
+
 function orgColor(org) {
+  const canon = canonicalOrg(org);
   for (const key of Object.keys(orgColors)) {
-    if (org && org.includes(key)) return orgColors[key];
+    if (canon && canon.includes(key)) return orgColors[key];
   }
   return defaultOrgColor;
 }
@@ -69,39 +83,6 @@ function wrapText(textSelection, maxWidth, lineHeight = 1.2) {
   });
 }
 
-// --- SVG + zoom ---
-const svg = d3.select("#dag").attr("width", width).attr("height", height);
-
-const zoomContainer = svg.append("g");
-const container     = zoomContainer.append("g");
-
-const zoom = d3.zoom()
-  .scaleExtent([0.15, 8])
-  .on("zoom", (event) => {
-    zoomContainer.attr("transform", event.transform);
-    const k = event.transform.k;
-
-    // Counter-scale nodes so they keep the same visual size while zooming.
-    container.selectAll("g.node").each(function (d) {
-      const r   = d.expanded ? expandedRadius : d.baseRadius;
-      const sel = d3.select(this);
-      sel.select("circle.node-body").attr("r", r / k).attr("stroke-width", 3 / k);
-      sel.select("image")
-        .attr("x", -(r / k)).attr("y", -(r / k))
-        .attr("width", 2 * r / k).attr("height", 2 * r / k)
-        .attr("clip-path", `circle(${r / k}px)`);
-      sel.select("text.node-label")
-        .attr("dy", (r / k) + 14 / k)
-        .attr("font-size", `${12 / k}px`);
-    });
-
-    container.selectAll(".link")
-      .attr("stroke-width", (d) => d._strokeWidth / k);
-  });
-
-svg.call(zoom);
-svg.on("dblclick.zoom", null);
-
 // --- Load + render ---
 fetch("/api/graph")
   .then(r => r.json())
@@ -115,104 +96,316 @@ function renderGraph(graph) {
   graph.nodes.forEach(d => {
     d.dateObj    = new Date(d.date);
     d.expanded   = false;
-    d.childOffset = 0;
-    const el = tempSvg.append("text").text(d.name).attr("font-size", "12px");
+    d.canonicalOrg = canonicalOrg(d.properties.organization);
+    const el = tempSvg.append("text").text(d.name).attr("font-size", "11px");
     d.textWidth = el.node().getBBox().width + textPadding;
     el.remove();
   });
   tempSvg.remove();
 
-  // ── 2. Compute out-degree → radius ───────────────────────────────────────
+  // ── 2. Assign uniform radius + org color ──────────────────────────────────
   const outDegree = {};
   graph.nodes.forEach(d => { outDegree[d.id] = 0; });
   graph.links.forEach(l => {
     const srcId = l.source.id !== undefined ? l.source.id : l.source;
     outDegree[srcId] = (outDegree[srcId] || 0) + 1;
   });
-  const maxDegree  = Math.max(...Object.values(outDegree), 1);
-  const radiusScale = d3.scalePow().exponent(2)
-    .domain([0, maxDegree]).range([minRadius, maxRadius]);
+  const maxDegree = Math.max(...Object.values(outDegree), 1);
   graph.nodes.forEach(d => {
-    d.baseRadius = radiusScale(outDegree[d.id] || 0);
+    d.baseRadius = nodeRadius;
     d.orgColor   = orgColor(d.properties.organization);
     d.degree     = outDegree[d.id] || 0;
   });
 
-  // ── 3. Time scale ─────────────────────────────────────────────────────────
+  // ── 3. Build org lanes ───────────────────────────────────────────────────
+  const nodeMap = {};
+  graph.nodes.forEach(d => { nodeMap[d.id] = d; });
+
+  const orgGroups = {};
+  graph.nodes.forEach(d => {
+    const org = d.canonicalOrg;
+    if (!orgGroups[org]) orgGroups[org] = [];
+    orgGroups[org].push(d);
+  });
+
+  const orgList = Object.keys(orgGroups).sort((a, b) => {
+    // Sort by latest model date descending (newest org on top)
+    const aLatest = Math.max(...orgGroups[a].map(n => n.dateObj));
+    const bLatest = Math.max(...orgGroups[b].map(n => n.dateObj));
+    return bLatest - aLatest;
+  });
+
+  // ── 4. Compute canvas dimensions ─────────────────────────────────────────
+  const totalLanes = orgList.length;
+  const contentTop = 0;
+  const canvasHeight = totalLanes * laneHeight + 40;
+  const viewWidth = window.innerWidth - sidebarWidth;
+  const canvasWidth = Math.max(viewWidth, viewWidth * 2.5);
+
+  // ── 5. Time scale (horizontal) ───────────────────────────────────────────
   const dateExtent = d3.extent(graph.nodes, d => d.dateObj);
   dateExtent[0] = new Date(dateExtent[0].getFullYear(), 0, 1);
-  dateExtent[1] = new Date(dateExtent[1].getFullYear() + 2, 0, 1);
-  const yScale    = d3.scaleTime().domain(dateExtent).range([margin.top, height - margin.bottom]);
+  dateExtent[1] = new Date(dateExtent[1].getFullYear() + 1, 0, 1);
+  const xScale = d3.scaleTime().domain(dateExtent).range([40, canvasWidth - 60]);
   const yearTicks = d3.timeYears(dateExtent[0], dateExtent[1]);
+  const monthTicks = d3.timeMonths(dateExtent[0], dateExtent[1]);
 
-  // ── 4. Starfield (static — no SVG <animate>, avoids continuous repaints) ──
-  const starGroup = container.append("g").attr("class", "stars");
-  const numStars  = 250;
-  for (let i = 0; i < numStars; i++) {
-    starGroup.append("circle")
-      .attr("cx", (Math.random() - 0.3) * width * 5)
-      .attr("cy", Math.random() * height)
-      .attr("r",  Math.random() * 1.3 + 0.2)
-      .attr("fill", "white")
-      .attr("opacity", Math.random() * 0.5 + 0.07);
-  }
+  // ── 6. Compute lane Y positions ──────────────────────────────────────────
+  const orgLaneY = {};
+  orgList.forEach((org, i) => {
+    orgLaneY[org] = i * laneHeight + laneHeight / 2;
+  });
 
-  // ── 5. Year grid + labels ─────────────────────────────────────────────────
-  const gridGroup = container.append("g").attr("class", "grid");
-  gridGroup.selectAll("line.year-line").data(yearTicks).enter()
-    .append("line").attr("class", "year-line")
-    .attr("x1", -99999).attr("x2", 99999)
-    .attr("y1", d => yScale(d)).attr("y2", d => yScale(d));
-  gridGroup.selectAll("text.year-label").data(yearTicks).enter()
-    .append("text").attr("class", "year-label")
-    .attr("x", margin.left - 12).attr("y", d => yScale(d)).attr("dy", "0.35em")
+  // ── 7. Position nodes within their lane ──────────────────────────────────
+  // Nodes always on lane center line; only push x-right to avoid horizontal overlap
+  orgList.forEach(org => {
+    const nodes = orgGroups[org].sort((a, b) => a.dateObj - b.dateObj);
+    const laneY = orgLaneY[org];
+    const placed = []; // { x, radius }
+    nodes.forEach(d => {
+      let x = xScale(d.dateObj); // x starts at exact date position
+      const r = d.baseRadius;
+      const minGap = r * 2 + 6;
+
+      // Only push right if overlapping horizontally (no vertical displacement)
+      let attempts = 0;
+      while (attempts < 30) {
+        const overlaps = placed.some(p => Math.abs(p.x - x) < p.radius + r + minGap);
+        if (!overlaps) break;
+        x += r * 2 + 4; // nudge right by node diameter
+        attempts++;
+      }
+      d.timelineX = x;
+      d.timelineY = laneY; // always on lane center
+      d.x = d.timelineX;
+      d.y = d.timelineY;
+      placed.push({ x, radius: r });
+    });
+  });
+
+  // ── 8. Scrollbar sync ────────────────────────────────────────────────────
+  const contentEl = document.getElementById("content");
+  const sidebarEl = document.getElementById("sidebar");
+  const timelineEl = document.getElementById("timeline");
+
+  contentEl.addEventListener("scroll", () => {
+    // Proportional scroll sync (different container heights)
+    const contentMaxScroll = contentEl.scrollHeight - contentEl.clientHeight;
+    const sidebarMaxScroll = sidebarEl.scrollHeight - sidebarEl.clientHeight;
+    if (contentMaxScroll > 0 && sidebarMaxScroll > 0) {
+      sidebarEl.scrollTop = (contentEl.scrollTop / contentMaxScroll) * sidebarMaxScroll;
+    }
+    timelineEl.scrollLeft = contentEl.scrollLeft;
+  });
+
+  // ── 9. Draw sidebar org labels ───────────────────────────────────────────
+  // Map org names to their icon files
+  const orgIconMap = {
+    "Google": "google.png", "OpenAI": "openai.jpg", "Meta": "meta.png",
+    "DeepMind": "deepmind.webp", "Microsoft": "microsoft.png",
+    "Stanford": "stanford.png", "DeepSeek": "deepseek.webp",
+    "Anthropic": "anthropic.webp", "NVIDIA": "nvidia.png",
+    "Mistral": "mistral.png", "Alibaba": "alibaba.webp",
+    "HuggingFace": "huggingface.svg", "BigScience": "bigscience.png",
+    "EleutherAI et al.": "eleutherai.webp", "Ai2": "ai2.jpg",
+    "xAI": "xai.png",
+  };
+
+  const sidebarSvg = d3.select("#sidebar").append("svg")
+    .attr("width", sidebarWidth).attr("height", canvasHeight);
+
+  // Right-aligned layout: [name] [icon] at right edge
+  const iconCx = sidebarWidth - 24; // icon center x (rightmost)
+  const iconX = sidebarWidth - 36;  // icon image x
+  const nameX = sidebarWidth - 44;  // name text x (left of icon, text-anchor=end)
+
+  // Clip path for sidebar icons
+  const sidebarDefs = sidebarSvg.append("defs");
+  sidebarDefs.append("clipPath").attr("id", "sidebar-icon-clip")
+    .append("circle").attr("cx", iconCx).attr("cy", 0).attr("r", 11);
+
+  const orgRows = sidebarSvg.selectAll("g.org-row").data(orgList).enter()
+    .append("g").attr("class", "org-row")
+    .attr("transform", d => `translate(0, ${orgLaneY[d]})`);
+
+  // Company icon background circle
+  orgRows.append("circle")
+    .attr("cx", iconCx).attr("cy", 0)
+    .attr("r", 12)
+    .attr("fill", d => orgColor(d))
+    .attr("opacity", 0.15);
+
+  // Company icon (clipped to circle)
+  orgRows.append("image")
+    .attr("xlink:href", d => "icons/" + (orgIconMap[d] || "google.png"))
+    .attr("x", iconX).attr("y", -12)
+    .attr("width", 24).attr("height", 24)
+    .attr("clip-path", "url(#sidebar-icon-clip)");
+
+  // Org name (right-aligned, left of icon)
+  orgRows.append("text")
+    .attr("class", "org-label")
+    .attr("x", nameX)
+    .attr("y", 0)
+    .attr("dy", "0.35em")
+    .attr("text-anchor", "end")
+    .attr("font-size", "11px")
+    .attr("font-family", "'Inter', sans-serif")
+    .attr("font-weight", "500")
+    .attr("fill", d => orgColor(d))
+    .attr("opacity", 0.9)
+    .text(d => d);
+
+  // Subtle horizontal divider per lane
+  sidebarSvg.selectAll("line.lane-sep").data(orgList).enter()
+    .append("line")
+    .attr("x1", 16).attr("x2", sidebarWidth - 16)
+    .attr("y1", d => orgLaneY[d] + laneHeight / 2)
+    .attr("y2", d => orgLaneY[d] + laneHeight / 2)
+    .attr("stroke", "rgba(0,0,0,0.04)")
+    .attr("stroke-width", 1);
+
+  // ── 10. Draw bottom timeline ─────────────────────────────────────────────
+  const timelineSvg = d3.select("#timeline").append("svg")
+    .attr("width", canvasWidth).attr("height", bottomBarHeight);
+
+  // Year interval color bands (subtle warm tints for light theme)
+  const yearBandColors = [
+    "rgba(0,0,0,0.02)",   // dark tint 1
+    "rgba(0,0,0,0.01)",   // dark tint 2
+    "rgba(0,0,0,0.02)",   // dark tint 3
+    "rgba(0,0,0,0.01)",   // dark tint 4
+    "rgba(0,0,0,0.02)",   // dark tint 5
+    "rgba(0,0,0,0.01)",   // dark tint 6
+    "rgba(0,0,0,0.02)",   // dark tint 7
+    "rgba(0,0,0,0.01)",   // dark tint 8
+    "rgba(0,0,0,0.02)",   // dark tint 9
+    "rgba(0,0,0,0.01)",   // dark tint 10
+  ];
+  yearTicks.forEach((year, i) => {
+    const x1 = xScale(year);
+    const x2 = i < yearTicks.length - 1 ? xScale(yearTicks[i + 1]) : canvasWidth;
+    timelineSvg.append("rect")
+      .attr("x", x1).attr("y", 0)
+      .attr("width", x2 - x1).attr("height", bottomBarHeight)
+      .attr("fill", yearBandColors[i % yearBandColors.length]);
+  });
+
+  timelineSvg.selectAll("line.tl-line").data(yearTicks).enter()
+    .append("line")
+    .attr("x1", d => xScale(d)).attr("x2", d => xScale(d))
+    .attr("y1", 0).attr("y2", bottomBarHeight)
+    .attr("stroke", "rgba(120,150,200,0.15)")
+    .attr("stroke-width", 1);
+
+  timelineSvg.selectAll("text.tl-label").data(yearTicks).enter()
+    .append("text")
+    .attr("x", d => xScale(d))
+    .attr("y", 18)
+    .attr("dy", "0.35em")
+    .attr("text-anchor", "middle")
+    .attr("font-size", "12px")
+    .attr("font-family", "'Inter', sans-serif")
+    .attr("font-weight", "600")
+    .attr("fill", "rgba(0,0,0,0.6)")
     .text(d => d.getFullYear());
 
-  // ── 6. Initial x positions ────────────────────────────────────────────────
-  const xScale = d3.scalePoint()
-    .domain(graph.nodes.map(d => d.id))
-    .range([margin.left, width - margin.right])
-    .padding(60);
-  graph.nodes.forEach(d => {
-    d.initialX = xScale(d.id);
-    if (d.x === undefined) d.x = d.initialX;
+  // Month labels (abbreviated, smaller)
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  timelineSvg.selectAll("text.tl-month").data(monthTicks).enter()
+    .append("text")
+    .attr("class", "tl-month")
+    .attr("x", d => xScale(d))
+    .attr("y", 42)
+    .attr("dy", "0.35em")
+    .attr("text-anchor", "middle")
+    .attr("font-size", "9px")
+    .attr("font-family", "'Inter', sans-serif")
+    .attr("font-weight", "400")
+    .attr("fill", "rgba(0,0,0,0.3)")
+    .text(d => monthNames[d.getMonth()]);
+
+  // Month tick marks (short lines)
+  timelineSvg.selectAll("line.tl-month-tick").data(monthTicks).enter()
+    .append("line")
+    .attr("class", "tl-month-tick")
+    .attr("x1", d => xScale(d)).attr("x2", d => xScale(d))
+    .attr("y1", 30).attr("y2", 36)
+    .attr("stroke", "rgba(0,0,0,0.1)")
+    .attr("stroke-width", 1);
+
+  // Year boundary separator lines in timeline
+  timelineSvg.selectAll("line.tl-boundary").data(yearTicks).enter()
+    .append("line")
+    .attr("x1", d => xScale(d)).attr("x2", d => xScale(d))
+    .attr("y1", 0).attr("y2", bottomBarHeight)
+    .attr("stroke", "rgba(0,0,0,0.08)")
+    .attr("stroke-width", 1);
+
+  // ── 11. Draw main SVG content ────────────────────────────────────────────
+  const svg = d3.select("#content").append("svg")
+    .attr("width", canvasWidth).attr("height", canvasHeight);
+
+  // Starfield (subtle dots for light theme)
+  const starGroup = svg.append("g").attr("class", "stars");
+  for (let i = 0; i < 80; i++) {
+    starGroup.append("circle")
+      .attr("cx", Math.random() * canvasWidth)
+      .attr("cy", Math.random() * canvasHeight)
+      .attr("r", Math.random() * 0.8 + 0.2)
+      .attr("fill", "#000000")
+      .attr("opacity", Math.random() * 0.04 + 0.01);
+  }
+
+  // Lane backgrounds (alternating subtle warm tints)
+  const laneGroup = svg.append("g").attr("class", "lanes");
+  orgList.forEach((org, i) => {
+    const laneY = orgLaneY[org];
+    const opacity = i % 2 === 0 ? 0.015 : 0.025;
+    laneGroup.append("rect")
+      .attr("x", 0).attr("y", laneY - laneHeight / 2)
+      .attr("width", canvasWidth).attr("height", laneHeight)
+      .attr("fill", "#000000").attr("opacity", opacity).attr("rx", 4);
   });
 
-  // ── 7. Force simulation ───────────────────────────────────────────────────
-  // Much stronger repulsion and wider collision to give every node its own space.
-  const simulation = d3.forceSimulation(graph.nodes)
-    .force("x", d3.forceX(d => d.initialX).strength(0.4))
-    .force("y", d3.forceY(d => yScale(d.dateObj)).strength(1))
-    .force("link",
-      d3.forceLink(graph.links).id(d => d.id).distance(400).strength(0.25))
-    .force("charge", d3.forceManyBody().strength(-900).distanceMax(1600))
-    .force("collision", d3.forceCollide(d => {
-      const r = d.expanded ? expandedRadius : d.baseRadius;
-      return Math.max(r * 4, d.textWidth + 70);
-    }))
-    .velocityDecay(0.75)
-    .on("tick", ticked)
-    .on("end", updateGradients);
+  // Year grid lines (in content, synced with bottom bar)
+  const gridGroup = svg.append("g").attr("class", "grid");
 
-  // ── 8. Link child-offset preprocessing ───────────────────────────────────
-  graph.links.forEach(link => {
-    const tgtId = link.target.id !== undefined ? link.target.id : link.target;
-    const srcId = link.source.id !== undefined ? link.source.id : link.source;
-    const srcNode = graph.nodes.find(n => n.id === srcId);
-    const tgtNode = graph.nodes.find(n => n.id === tgtId);
-    if (srcNode) {
-      srcNode.childOffset = (srcNode.childOffset || 0) + 1;
-      if (tgtNode) {
-        tgtNode.parent      = srcNode.id;
-        tgtNode.childOffset = srcNode.childOffset;
-      }
-    }
+  // Year interval color bands (matching timeline)
+  yearTicks.forEach((year, i) => {
+    const x1 = xScale(year);
+    const x2 = i < yearTicks.length - 1 ? xScale(yearTicks[i + 1]) : canvasWidth;
+    gridGroup.append("rect")
+      .attr("x", x1).attr("y", 0)
+      .attr("width", x2 - x1).attr("height", canvasHeight)
+      .attr("fill", yearBandColors[i % yearBandColors.length]);
   });
 
-  // ── 9. SVG defs: filters + per-link gradients ────────────────────────────
+  // Year boundary vertical lines (visible separators)
+  gridGroup.selectAll("line.year-boundary").data(yearTicks).enter()
+    .append("line").attr("class", "year-boundary")
+    .attr("x1", d => xScale(d)).attr("x2", d => xScale(d))
+    .attr("y1", 0).attr("y2", canvasHeight)
+    .attr("stroke", "rgba(0,0,0,0.06)")
+    .attr("stroke-width", 1)
+    .attr("stroke-dasharray", "4,4");
+
+  // Month grid lines (very subtle, dotted)
+  gridGroup.selectAll("line.month-line").data(monthTicks).enter()
+    .append("line").attr("class", "month-line")
+    .attr("x1", d => xScale(d)).attr("x2", d => xScale(d))
+    .attr("y1", 0).attr("y2", canvasHeight)
+    .attr("stroke", "rgba(0,0,0,0.025)")
+    .attr("stroke-width", 0.5)
+    .attr("stroke-dasharray", "2,4");
+
+  gridGroup.selectAll("line.year-line").data(yearTicks).enter()
+    .append("line").attr("class", "year-line")
+    .attr("x1", d => xScale(d)).attr("x2", d => xScale(d))
+    .attr("y1", 0).attr("y2", canvasHeight);
+
+  // SVG defs
   const svgDefs = svg.append("defs");
-
-  // Drop-shadow for detail popup only (single filter, not applied to many elements)
   svgDefs.append("filter").attr("id", "dropShadow").html(`
     <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
     <feOffset dx="0" dy="3" result="offsetblur"/>
@@ -221,107 +414,114 @@ function renderGraph(graph) {
     <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
   `);
 
-  // Per-link linear gradient — userSpaceOnUse so coordinates never degenerate
-  // (objectBoundingBox fails for horizontal paths with zero-height bounding boxes).
-  // Coordinates are set from initial node positions and updated exactly once
-  // when the simulation finishes, so there is no per-tick overhead.
+  // Per-node clip paths for icons (dynamic radius on expand)
+
+  // Per-link gradient
   graph.links.forEach((l, i) => {
     const srcId   = l.source.id !== undefined ? l.source.id : l.source;
     const tgtId   = l.target.id !== undefined ? l.target.id : l.target;
-    const srcNode = graph.nodes.find(n => n.id === srcId);
-    const tgtNode = graph.nodes.find(n => n.id === tgtId);
+    const srcNode = nodeMap[srcId];
+    const tgtNode = nodeMap[tgtId];
     const gradId  = `link-grad-${i}`;
     l._gradId = gradId;
 
     const deg      = srcNode ? srcNode.degree : 0;
-    l._strokeWidth = 0.6 + Math.sqrt(deg) * 0.55;
-    l._opacity     = 0.22 + Math.min(deg / maxDegree, 1) * 0.5;
+    l._strokeWidth = 0.6 + Math.sqrt(deg) * 0.3;
+    l._opacity     = 0.2 + Math.min(deg / maxDegree, 1) * 0.4;
 
     const grad = svgDefs.append("linearGradient")
       .attr("id", gradId)
       .attr("gradientUnits", "userSpaceOnUse")
-      .attr("x1", srcNode ? srcNode.x || 0 : 0)
-      .attr("y1", srcNode ? yScale(srcNode.dateObj) : 0)
-      .attr("x2", tgtNode ? tgtNode.x || 0 : 0)
-      .attr("y2", tgtNode ? yScale(tgtNode.dateObj) : 0);
+      .attr("x1", srcNode ? srcNode.timelineX || 0 : 0)
+      .attr("y1", srcNode ? srcNode.timelineY || 0 : 0)
+      .attr("x2", tgtNode ? tgtNode.timelineX || 0 : 0)
+      .attr("y2", tgtNode ? tgtNode.timelineY || 0 : 0);
     grad.append("stop").attr("offset", "0%")
       .attr("stop-color", srcNode ? srcNode.orgColor : defaultOrgColor)
       .attr("stop-opacity", l._opacity);
     grad.append("stop").attr("offset", "100%")
       .attr("stop-color", tgtNode ? tgtNode.orgColor : defaultOrgColor)
-      .attr("stop-opacity", l._opacity * 0.55);
+      .attr("stop-opacity", l._opacity * 0.5);
   });
 
-  // ── 10. Draw links ────────────────────────────────────────────────────────
-  const linkGroup    = container.append("g").attr("class", "links");
+  // Draw links
+  const linkGroup    = svg.append("g").attr("class", "links");
   const linkElements = linkGroup.selectAll("path").data(graph.links).enter()
     .append("path")
     .attr("class", "link")
     .attr("stroke", d => `url(#${d._gradId})`)
-    .attr("stroke-width", d => d._strokeWidth);
+    .attr("stroke-width", d => d._strokeWidth)
+    .attr("d", d => {
+      const srcNode = nodeMap[d.source.id || d.source];
+      const tgtNode = nodeMap[d.target.id || d.target];
+      if (!srcNode || !tgtNode) return "";
+      return `M${srcNode.timelineX},${srcNode.timelineY} L${tgtNode.timelineX},${tgtNode.timelineY}`;
+    });
 
-  // ── 11. Draw nodes ────────────────────────────────────────────────────────
-  const nodeGroup    = container.append("g").attr("class", "nodes");
+  // Draw nodes
+  const nodeGroup    = svg.append("g").attr("class", "nodes");
   const nodeElements = nodeGroup.selectAll("g.node").data(graph.nodes).enter()
     .append("g").attr("class", "node")
-    // CSS drop-shadow is GPU-accelerated and far cheaper than SVG feGaussianBlur.
-    // Glow size and intensity scale with the node's influence (degree).
-    .style("filter", d => {
-      const spread = Math.max(4, d.baseRadius * 0.55);
-      const bright = Math.max(6, d.baseRadius * 1.1);
-      return `drop-shadow(0 0 ${spread}px ${d.orgColor}) drop-shadow(0 0 ${bright}px ${d.orgColor}40)`;
-    })
+    .attr("transform", d => `translate(${d.timelineX}, ${d.timelineY})`)
+    .style("filter", () => `drop-shadow(0 1px 3px rgba(0,0,0,0.12))`)
     .on("click", function (event, d) {
+      event.stopPropagation();
       d.expanded = !d.expanded;
-      d.fx = d.expanded ? d.x : null;
-      d.fy = d.expanded ? d.y : null;
-      simulation.alphaTarget(0.05).restart();
       d3.select(this).raise();
       updateNodeDetails(d3.select(this), d, d.expanded);
     });
 
-  // Main white body circle
-  nodeElements.append("circle")
-    .attr("class", "node-body")
-    .attr("r", d => d.baseRadius)
-    .attr("fill", "white")
-    .attr("stroke", d => d.orgColor)
-    .attr("stroke-width", 3);
+  // Per-node clipPath
+  nodeElements.each(function (d) {
+    svgDefs.append("clipPath").attr("id", `clip-${d.id}`)
+      .append("circle").attr("r", nodeRadius - 2);
+  });
 
-  // Logo image
+  // Background circle (white for light theme icon contrast)
+  nodeElements.append("circle")
+    .attr("r", nodeRadius)
+    .attr("fill", "#ffffff")
+    .attr("stroke", d => d.orgColor)
+    .attr("stroke-width", 2)
+    .attr("stroke-opacity", 0.7);
+
+  // Model icon (clipped to circle)
   nodeElements.append("image")
+    .attr("class", "node-icon")
     .attr("xlink:href", d => "icons/" + d.image)
-    .attr("x", d => -d.baseRadius).attr("y", d => -d.baseRadius)
-    .attr("width", d => 2 * d.baseRadius).attr("height", d => 2 * d.baseRadius)
-    .attr("clip-path", d => `circle(${d.baseRadius}px)`);
+    .attr("x", -(nodeRadius - 2))
+    .attr("y", -(nodeRadius - 2))
+    .attr("width", (nodeRadius - 2) * 2)
+    .attr("height", (nodeRadius - 2) * 2)
+    .attr("clip-path", d => `url(#clip-${d.id})`);
 
   // Label
   nodeElements.append("text")
     .attr("class", "node-label")
-    .attr("dy", d => d.baseRadius + 14)
+    .attr("dy", nodeRadius + 13)
     .attr("text-anchor", "middle")
-    .attr("font-size", "12px")
+    .attr("font-size", "10px")
     .attr("font-family", "'Inter', sans-serif")
     .attr("font-weight", "500")
-    .attr("fill", "rgba(220, 232, 255, 0.92)")
-    .style("text-shadow",
-      "0 1px 4px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.7)")
+    .attr("fill", "rgba(0,0,0,0.7)")
+    .style("text-shadow", "0 1px 2px rgba(255,255,255,0.8)")
     .text(d => d.name);
 
   // ── 12. Expanded-node detail popup ────────────────────────────────────────
   function updateNodeDetails(nodeSelection, d, showDetails) {
     nodeSelection.selectAll(".details").remove();
+    const r = showDetails ? expandedRadius : nodeRadius;
+    const imgR = r - 3;
 
-    const r = showDetails ? expandedRadius : d.baseRadius;
-
-    nodeSelection.select("circle.node-body")
-      .attr("r", r).attr("stroke-width", 3);
+    nodeSelection.select("circle")
+      .attr("r", r).attr("stroke-width", showDetails ? 2.5 : 2);
     nodeSelection.select("text.node-label")
-      .attr("dy", showDetails ? expandedRadius + 16 : d.baseRadius + 14);
-    nodeSelection.select("image")
-      .attr("x", -r).attr("y", -r)
-      .attr("width", 2 * r).attr("height", 2 * r)
-      .attr("clip-path", `circle(${showDetails ? r - 2 : r}px)`);
+      .attr("dy", showDetails ? expandedRadius + 16 : nodeRadius + 13);
+    nodeSelection.select("image.node-icon")
+      .attr("x", -imgR).attr("y", -imgR)
+      .attr("width", imgR * 2).attr("height", imgR * 2);
+    // Update the per-node clip-path circle
+    svgDefs.select(`#clip-${d.id} circle`).attr("r", imgR);
 
     if (!showDetails) return;
 
@@ -330,33 +530,26 @@ function renderGraph(graph) {
       .attr("transform", `translate(0, ${expandedRadius + 34})`);
     details.raise();
 
-    // Dark glass background
     const detailsRect = details.append("rect")
-      .attr("x", -detailsWidth / 2)
-      .attr("y", 0)
-      .attr("width", detailsWidth)
-      .attr("height", detailsHeight)
-      .attr("fill", "rgba(6, 10, 35, 0.92)")
-      .attr("stroke", d.orgColor)
-      .attr("stroke-opacity", 0.45)
-      .attr("stroke-width", 1)
-      .attr("rx", 10).attr("ry", 10)
+      .attr("x", -detailsWidth / 2).attr("y", 0)
+      .attr("width", detailsWidth).attr("height", 140)
+      .attr("fill", "rgba(255, 255, 255, 0.95)")
+      .attr("stroke", d.orgColor).attr("stroke-opacity", 0.3)
+      .attr("stroke-width", 1).attr("rx", 10).attr("ry", 10)
       .attr("filter", "url(#dropShadow)");
 
     const content = details.append("g").attr("transform", "translate(0, 12)");
-
     const addText = (txt, y, opts = {}) =>
       content.append("text")
-        .attr("x", 0).attr("y", y)
-        .attr("text-anchor", "middle")
+        .attr("x", 0).attr("y", y).attr("text-anchor", "middle")
         .attr("font-size", opts.size || "12px")
         .attr("font-family", "'Inter', sans-serif")
-        .attr("fill", opts.color || "#a8bce0")
+        .attr("fill", opts.color || "rgba(0,0,0,0.6)")
         .attr("font-weight", opts.weight || "normal")
         .text(txt);
 
-    addText(d.name, 20,  { color: "#e8f0ff", weight: "600", size: "13px" });
-    addText(d.date, 38,  { color: "#6a82a8", size: "11px" });
+    addText(d.name, 20,  { color: "rgba(0,0,0,0.85)", weight: "600", size: "13px" });
+    addText(d.date, 38,  { color: "rgba(0,0,0,0.45)", size: "11px" });
     addText(d.properties.organization, 54, { color: d.orgColor, size: "11px" });
 
     const desc = content.append("text")
@@ -364,48 +557,94 @@ function renderGraph(graph) {
       .attr("text-anchor", "middle")
       .attr("font-size", "11px")
       .attr("font-family", "'Inter', sans-serif")
-      .attr("fill", "#8aa0cc")
+      .attr("fill", "rgba(0,0,0,0.55)")
       .text(d.properties.description);
     wrapText(desc, detailsWidth - 24);
 
-    const descBBox       = desc.node().getBBox();
-    const newHeight      = descBBox.y + descBBox.height + 60;
+    const descBBox  = desc.node().getBBox();
+    const newHeight = descBBox.y + descBBox.height + 60;
     detailsRect.attr("height", newHeight);
 
     const linkG = content.append("g")
       .style("cursor", "pointer")
-      .on("click", () => window.open(d.link, "_blank"));
+      .on("click", (e) => { e.stopPropagation(); window.open(d.link, "_blank"); });
     linkG.append("text")
       .attr("x", 0).attr("y", newHeight - 30)
-      .attr("text-anchor", "middle")
-      .attr("font-size", "11px")
-      .attr("fill", "#6ab0ff")
-      .attr("font-family", "'Inter', sans-serif")
+      .attr("text-anchor", "middle").attr("font-size", "11px")
+      .attr("fill", d.orgColor).attr("font-family", "'Inter', sans-serif")
       .style("text-decoration", "underline")
       .text("View Paper / Announcement");
   }
 
-  // ── 13. Tick handler ──────────────────────────────────────────────────────
-  function ticked() {
-    nodeElements.attr("transform", d => `translate(${d.x}, ${yScale(d.dateObj)})`);
+  svg.on("click", () => {
+    nodeElements.each(function (d) {
+      if (d.expanded) {
+        d.expanded = false;
+        updateNodeDetails(d3.select(this), d, false);
+      }
+    });
+  });
 
-    linkElements.attr("d", d => {
-      const x1 = d.source.x, y1 = yScale(d.source.dateObj);
-      const x2 = d.target.x, y2 = yScale(d.target.dateObj);
-      const dy  = y2 - y1;
-      const cy1 = y1 + dy * 0.35;
-      const cy2 = y2 - dy * 0.35;
-      return `M${x1},${y1} C${x1},${cy1} ${x2},${cy2} ${x2},${y2}`;
+  // ── 13. Hover highlight ──────────────────────────────────────────────────
+  const connectedTo = {};
+  graph.nodes.forEach(d => { connectedTo[d.id] = new Set(); });
+  graph.links.forEach(l => {
+    const srcId = l.source.id || l.source;
+    const tgtId = l.target.id || l.target;
+    connectedTo[srcId].add(tgtId);
+    connectedTo[tgtId].add(srcId);
+  });
+
+  nodeElements
+    .on("mouseenter", function (event, d) {
+      const connected = connectedTo[d.id] || new Set();
+      connected.add(d.id);
+
+      nodeElements
+        .style("opacity", n => connected.has(n.id) ? 1 : 0.15)
+        .style("filter", n => {
+          if (!connected.has(n.id)) return "none";
+          return `drop-shadow(0 0 4px ${n.orgColor}40) drop-shadow(0 0 8px ${n.orgColor}25)`;
+        });
+
+      linkElements
+        .style("opacity", l => {
+          const srcId = l.source.id || l.source;
+          const tgtId = l.target.id || l.target;
+          return (srcId === d.id || tgtId === d.id) ? 0.6 : 0.03;
+        })
+        .attr("stroke-width", l => {
+          const srcId = l.source.id || l.source;
+          const tgtId = l.target.id || l.target;
+          return (srcId === d.id || tgtId === d.id) ? l._strokeWidth * 2 : l._strokeWidth;
+        });
+    })
+    .on("mouseleave", function () {
+      nodeElements
+        .style("opacity", 1)
+        .style("filter", () => `drop-shadow(0 1px 3px rgba(0,0,0,0.12))`);
+      linkElements
+        .style("opacity", 1)
+        .attr("stroke-width", l => l._strokeWidth);
+    });
+
+  // ── 14. Organization filter ──────────────────────────────────────────────
+  const activeOrgs = new Set(Object.keys(orgColors));
+
+  function applyOrgFilter() {
+    nodeElements.style("display", d => {
+      const match = [...activeOrgs].some(k => d.canonicalOrg && d.canonicalOrg.includes(k));
+      return match ? null : "none";
+    });
+    linkElements.style("display", l => {
+      const srcNode = nodeMap[l.source.id || l.source];
+      const tgtNode = nodeMap[l.target.id || l.target];
+      if (!srcNode || !tgtNode) return "none";
+      const srcMatch = [...activeOrgs].some(k => srcNode.canonicalOrg && srcNode.canonicalOrg.includes(k));
+      const tgtMatch = [...activeOrgs].some(k => tgtNode.canonicalOrg && tgtNode.canonicalOrg.includes(k));
+      return (srcMatch && tgtMatch) ? null : "none";
     });
   }
 
-  // Called once when the simulation cools — snaps gradient endpoints to final
-  // node positions without any per-tick overhead.
-  function updateGradients() {
-    graph.links.forEach(l => {
-      svgDefs.select(`#${l._gradId}`)
-        .attr("x1", l.source.x).attr("y1", yScale(l.source.dateObj))
-        .attr("x2", l.target.x).attr("y2", yScale(l.target.dateObj));
-    });
-  }
+  window._orgFilter = { activeOrgs, orgColors, applyOrgFilter };
 }

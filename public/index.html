@@ -6,167 +6,202 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
 
             html, body {
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                height: 100%;
+                margin: 0; padding: 0;
+                width: 100%; height: 100%;
                 overflow: hidden;
-                background: #05051a;
+                background: #f5f3ef;
                 font-family: 'Inter', sans-serif;
+                color: #1a1a1a;
             }
 
-            svg {
-                width: 100vw;
-                height: 100vh;
-                display: block;
+            /* ---- Top bar (fixed) ---- */
+            #top-bar {
+                position: fixed; top: 0; left: 0; right: 0;
+                height: 44px; z-index: 200;
+                background: rgba(245, 243, 239, 0.92);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border-bottom: 1px solid rgba(0,0,0,0.06);
+                display: flex; align-items: center;
+                padding: 0 20px; gap: 16px;
+            }
+            #top-bar h1 {
+                margin: 0; font-size: 0.8em; font-weight: 600;
+                letter-spacing: 0.12em; text-transform: uppercase;
+                color: #1a1a1a; white-space: nowrap;
+            }
+            #org-filter {
+                display: flex; flex-wrap: nowrap; gap: 6px;
+                align-items: center; overflow-x: auto;
+            }
+            #org-filter .filter-label {
+                color: rgba(0,0,0,0.35); font-size: 10px;
+                font-weight: 600; letter-spacing: 0.08em;
+                text-transform: uppercase; white-space: nowrap;
+            }
+            .org-chip {
+                display: inline-flex; align-items: center; gap: 5px;
+                padding: 3px 10px; border-radius: 12px;
+                font-size: 11px; font-weight: 500; cursor: pointer;
+                transition: all 0.2s ease; border: 1px solid transparent;
+                user-select: none; white-space: nowrap;
+            }
+            .org-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+            .org-chip.active {
+                color: rgba(0,0,0,0.85);
+                background: rgba(0,0,0,0.04);
+                border-color: rgba(0,0,0,0.08);
+            }
+            .org-chip.inactive {
+                color: rgba(0,0,0,0.25);
+                background: transparent; border-color: transparent;
+            }
+            .org-chip.inactive .dot { opacity: 0.2; }
+            .org-chip:hover { background: rgba(0,0,0,0.06); }
+
+            /* ---- About button ---- */
+            #about-btn {
+                margin-left: auto; background: none; border: none;
+                color: rgba(0,0,0,0.4); font-size: 11px;
+                font-family: 'Inter', sans-serif; font-weight: 500;
+                cursor: pointer; white-space: nowrap;
+                transition: color 0.2s ease;
+            }
+            #about-btn:hover { color: rgba(0,0,0,0.8); }
+
+            /* ---- Main layout ---- */
+            #layout {
+                position: fixed;
+                top: 44px; left: 0; right: 0; bottom: 0;
+                display: grid;
+                grid-template-columns: 160px 1fr;
+                grid-template-rows: 1fr 66px;
+                grid-template-areas:
+                    "sidebar content"
+                    "sidebar timeline";
             }
 
-            /* ---- Title ---- */
-            h1 {
-                position: absolute;
-                z-index: 10;
-                top: 14px;
-                left: 16px;
-                margin: 0;
-                font-family: 'Inter', sans-serif;
-                font-weight: 600;
-                font-size: 1.15em;
-                letter-spacing: 0.12em;
-                text-transform: uppercase;
-                color: #e8f0ff;
-                text-shadow:
-                    0 0 12px rgba(120, 180, 255, 0.9),
-                    0 0 30px rgba(120, 180, 255, 0.4);
+            /* ---- Sidebar (fixed left, scrolls vertically) ---- */
+            #sidebar {
+                grid-area: sidebar;
+                overflow: auto;
+                background: rgba(245, 243, 239, 0.8);
+                border-right: 1px solid rgba(0,0,0,0.06);
+            }
+            #sidebar::-webkit-scrollbar { width: 0; height: 0; }
+            #sidebar svg { display: block; }
+            #sidebar .org-row { cursor: default; }
+            #sidebar .org-label {
+                transition: opacity 0.15s ease;
             }
 
-            /* ---- Info panels (glass morphism) ---- */
-            .info-panel {
-                position: absolute;
-                z-index: 100;
-                background: rgba(8, 12, 40, 0.75);
-                backdrop-filter: blur(14px);
-                -webkit-backdrop-filter: blur(14px);
-                border: 1px solid rgba(120, 160, 255, 0.18);
-                padding: 12px 16px;
-                border-radius: 12px;
-                box-shadow:
-                    0 4px 24px rgba(0,0,0,0.5),
-                    inset 0 1px 0 rgba(255,255,255,0.07);
-                max-width: 300px;
-                transition: all 0.3s ease;
+            /* ---- Content (scrollable both ways) ---- */
+            #content {
+                grid-area: content;
+                overflow: auto;
+                background: #f5f3ef;
             }
-
-            #about-container { top: 10px; right: 10px; }
-
-            #credits {
-                bottom: 20px;
-                right: 20px;
-                display: flex;
-                gap: 16px;
-                padding: 10px 16px;
+            #content::-webkit-scrollbar { width: 6px; height: 6px; }
+            #content::-webkit-scrollbar-track { background: transparent; }
+            #content::-webkit-scrollbar-thumb {
+                background: rgba(0,0,0,0.12);
+                border-radius: 3px;
             }
-
-            .info-toggle {
-                background: none;
-                border: none;
-                color: #a0b8e8;
-                font-family: 'Inter', sans-serif;
-                font-size: 0.9em;
-                font-weight: 600;
-                letter-spacing: 0.05em;
-                cursor: pointer;
-                padding: 0;
+            #content::-webkit-scrollbar-thumb:hover {
+                background: rgba(0,0,0,0.2);
             }
+            #content svg { display: block; }
 
-            .info-content {
-                margin-top: 10px;
-                color: #8aa0cc;
-                font-size: 0.82em;
-                line-height: 1.6;
+            /* ---- Timeline bar (fixed bottom, scrolls horizontally) ---- */
+            #timeline {
+                grid-area: timeline;
+                overflow: auto;
+                background: rgba(245, 243, 239, 0.9);
+                border-top: 1px solid rgba(0,0,0,0.06);
             }
-
-            .credits-link {
-                color: #7090d0;
-                font-size: 20px;
-                transition: color 0.2s ease, transform 0.2s ease;
-                text-decoration: none;
-            }
-
-            .credits-link:hover {
-                color: #a8c4ff;
-                transform: translateY(-2px);
-            }
+            #timeline::-webkit-scrollbar { width: 0; height: 0; }
+            #timeline svg { display: block; }
 
             /* ---- SVG element classes ---- */
             .node { cursor: pointer; }
-
-            .link {
-                fill: none;
-                stroke-linecap: round;
-            }
-
+            .link { fill: none; stroke-linecap: round; }
             .year-line {
-                stroke: rgba(140, 160, 220, 0.12);
-                stroke-dasharray: 3, 6;
+                stroke: rgba(0,0,0,0.04);
+                stroke-dasharray: 2, 10;
             }
-
-            .year-label {
-                fill: rgba(140, 160, 220, 0.45);
-                font-family: 'Inter', sans-serif;
-                font-size: 10px;
-                font-weight: 300;
-                letter-spacing: 0.05em;
-                text-anchor: end;
-            }
-
-            /* ---- Node glow pulse (for top-tier nodes) ---- */
-            @keyframes glowPulse {
-                0%, 100% { opacity: 0.22; }
-                50%       { opacity: 0.10; }
-            }
-            .glow-outer { animation: glowPulse 4s ease-in-out infinite; }
-
-            /* ---- Star twinkle ---- */
-            @keyframes twinkle {
-                0%, 100% { opacity: var(--base-opacity); }
-                50%       { opacity: calc(var(--base-opacity) * 0.3); }
+            .org-label {
+                dominant-baseline: middle;
             }
         </style>
     </head>
     <body>
-        <h1>LLM Family Tree</h1>
-
-        <div class="info-panel" id="about-container">
-            <details>
-                <summary class="info-toggle">About</summary>
-                <div class="info-content">
-                    <p>
-                        This visualization maps the lineage of large language model
-                        research from the Transformer architecture (2017) to the frontier
-                        models of 2026. Because many models are closed-source, some
-                        connections are inferred from public papers and announcements.
-                    </p>
-                    <p>Node size reflects influence (number of direct descendants). Click any node to expand it.</p>
-                    <p>Sources: arXiv, official model cards, and lab announcements.</p>
-                </div>
-            </details>
+        <div id="top-bar">
+            <h1>LLM Family Tree</h1>
+            <div id="org-filter"></div>
+            <button id="about-btn">About</button>
         </div>
 
-        <div class="info-panel" id="credits">
-            <a href="https://github.com/josh-janes" target="_blank" class="credits-link">
-                <i class="fab fa-github"></i>
-            </a>
-            <a href="https://www.jjanes.ca" target="_blank" class="credits-link">
-                <i class="fas fa-globe"></i>
-            </a>
+        <div id="layout">
+            <div id="sidebar"></div>
+            <div id="content"></div>
+            <div id="timeline"></div>
         </div>
 
-        <svg id="dag"></svg>
+        <!-- About popup -->
+        <div id="about-popup" style="display:none; position:fixed; top:50%; left:50%;
+            transform:translate(-50%,-50%); z-index:300; background:rgba(12,16,32,0.96);
+            backdrop-filter:blur(16px); border:1px solid rgba(100,140,220,0.15);
+            border-radius:14px; padding:24px 28px; max-width:380px;
+            box-shadow:0 8px 40px rgba(0,0,0,0.6); color:#8aa0cc;
+            font-size:0.82em; line-height:1.7;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <span style="color:#c8d8f0; font-weight:600; font-size:1.1em;">About</span>
+                <button onclick="document.getElementById('about-popup').style.display='none'"
+                    style="background:none; border:none; color:#6a82a8; font-size:18px; cursor:pointer;">&times;</button>
+            </div>
+            <p>This visualization maps the lineage of large language model research from the Transformer architecture (2017) to the frontier models of 2026.</p>
+            <p>Each row represents an organization. Nodes are placed by release date. Lines show derivation relationships.</p>
+            <p>Sources: arXiv, official model cards, and lab announcements.</p>
+        </div>
+        <div id="about-overlay" onclick="document.getElementById('about-popup').style.display='none';
+            document.getElementById('about-overlay').style.display='none'"
+            style="display:none; position:fixed; inset:0; z-index:250; background:rgba(0,0,0,0.4);"></div>
 
         <script src="https://d3js.org/d3.v7.min.js"></script>
         <script src="script.js"></script>
+        <script>
+          document.getElementById('about-btn').addEventListener('click', () => {
+            document.getElementById('about-popup').style.display = 'block';
+            document.getElementById('about-overlay').style.display = 'block';
+          });
+
+          const checkFilter = setInterval(() => {
+            if (window._orgFilter) {
+              clearInterval(checkFilter);
+              const { activeOrgs, orgColors, applyOrgFilter } = window._orgFilter;
+              const bar = document.getElementById('org-filter');
+              bar.innerHTML = '<span class="filter-label">Filter:</span>';
+              Object.entries(orgColors).forEach(([name, color]) => {
+                const chip = document.createElement('span');
+                chip.className = 'org-chip active';
+                chip.innerHTML = `<span class="dot" style="background:${color}"></span>${name}`;
+                chip.addEventListener('click', () => {
+                  if (activeOrgs.has(name)) {
+                    activeOrgs.delete(name);
+                    chip.className = 'org-chip inactive';
+                  } else {
+                    activeOrgs.add(name);
+                    chip.className = 'org-chip active';
+                  }
+                  applyOrgFilter();
+                });
+                bar.appendChild(chip);
+              });
+            }
+          }, 100);
+        </script>
     </body>
 </html>
