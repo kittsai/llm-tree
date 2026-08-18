@@ -103,7 +103,7 @@ function renderGraph(graph) {
   });
   tempSvg.remove();
 
-  // ── 2. Assign uniform radius + org color ──────────────────────────────────
+  // ── 2. Assign radius by degree + org color ─────────────────────────────────
   const outDegree = {};
   graph.nodes.forEach(d => { outDegree[d.id] = 0; });
   graph.links.forEach(l => {
@@ -112,9 +112,10 @@ function renderGraph(graph) {
   });
   const maxDegree = Math.max(...Object.values(outDegree), 1);
   graph.nodes.forEach(d => {
-    d.baseRadius = nodeRadius;
+    d.degree   = outDegree[d.id] || 0;
+    // Scale radius: 11px (leaf) → 20px (most-referenced)
+    d.baseRadius = 11 + (d.degree / maxDegree) * 9;
     d.orgColor   = orgColor(d.properties.organization);
-    d.degree     = outDegree[d.id] || 0;
   });
 
   // ── 3. Build org lanes ───────────────────────────────────────────────────
@@ -183,19 +184,55 @@ function renderGraph(graph) {
     });
   });
 
-  // ── 8. Scrollbar sync ────────────────────────────────────────────────────
-  const contentEl = document.getElementById("content");
-  const sidebarEl = document.getElementById("sidebar");
+  // ── 8. Scrollbar sync (bidirectional, pixel-accurate) ─────────────────────
+  const contentEl  = document.getElementById("content");
+  const sidebarEl  = document.getElementById("sidebar");
   const timelineEl = document.getElementById("timeline");
+  let isSyncing = false;
 
-  contentEl.addEventListener("scroll", () => {
-    // Proportional scroll sync (different container heights)
-    const contentMaxScroll = contentEl.scrollHeight - contentEl.clientHeight;
-    const sidebarMaxScroll = sidebarEl.scrollHeight - sidebarEl.clientHeight;
-    if (contentMaxScroll > 0 && sidebarMaxScroll > 0) {
-      sidebarEl.scrollTop = (contentEl.scrollTop / contentMaxScroll) * sidebarMaxScroll;
+  function syncVertical(source) {
+    if (isSyncing) return;
+    isSyncing = true;
+    const contentMax = contentEl.scrollHeight - contentEl.clientHeight;
+    const sidebarMax = sidebarEl.scrollHeight - sidebarEl.clientHeight;
+    if (contentMax > 0 && sidebarMax > 0) {
+      if (source === contentEl) {
+        sidebarEl.scrollTop = Math.min(contentEl.scrollTop, sidebarMax);
+      } else {
+        contentEl.scrollTop = Math.min(sidebarEl.scrollTop, contentMax);
+      }
     }
+    isSyncing = false;
+  }
+
+  // Override scrollTop setters to dispatch scroll event (for programmatic scrolls)
+  function patchScrollEl(el) {
+    const proto = Object.getPrototypeOf(el);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'scrollTop') ||
+                 Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+    if (!desc || !desc.set) return;
+    const origSet = desc.set;
+    Object.defineProperty(el, 'scrollTop', {
+      get: desc.get,
+      set(v) { origSet.call(el, v); el.dispatchEvent(new Event('scroll')); },
+      configurable: true
+    });
+  }
+  patchScrollEl(contentEl);
+  patchScrollEl(sidebarEl);
+
+  contentEl.addEventListener("scroll",  () => {
+    syncVertical(contentEl);
     timelineEl.scrollLeft = contentEl.scrollLeft;
+  });
+
+  sidebarEl.addEventListener("scroll",  () => syncVertical(sidebarEl));
+
+  timelineEl.addEventListener("scroll", () => {
+    if (isSyncing) return;
+    isSyncing = true;
+    contentEl.scrollLeft = timelineEl.scrollLeft;
+    isSyncing = false;
   });
 
   // ── 9. Draw sidebar org labels ───────────────────────────────────────────
@@ -215,14 +252,14 @@ function renderGraph(graph) {
     .attr("width", sidebarWidth).attr("height", canvasHeight);
 
   // Right-aligned layout: [name] [icon] at right edge
-  const iconCx = sidebarWidth - 24; // icon center x (rightmost)
-  const iconX = sidebarWidth - 36;  // icon image x
-  const nameX = sidebarWidth - 44;  // name text x (left of icon, text-anchor=end)
+  const iconCx = sidebarWidth - 26; // icon center x (rightmost)
+  const iconX = sidebarWidth - 40;  // icon image x
+  const nameX = sidebarWidth - 48;  // name text x (left of icon, text-anchor=end)
 
   // Clip path for sidebar icons
   const sidebarDefs = sidebarSvg.append("defs");
   sidebarDefs.append("clipPath").attr("id", "sidebar-icon-clip")
-    .append("circle").attr("cx", iconCx).attr("cy", 0).attr("r", 11);
+    .append("circle").attr("cx", iconCx).attr("cy", 0).attr("r", 13);
 
   const orgRows = sidebarSvg.selectAll("g.org-row").data(orgList).enter()
     .append("g").attr("class", "org-row")
@@ -231,15 +268,15 @@ function renderGraph(graph) {
   // Company icon background circle
   orgRows.append("circle")
     .attr("cx", iconCx).attr("cy", 0)
-    .attr("r", 12)
+    .attr("r", 14)
     .attr("fill", d => orgColor(d))
-    .attr("opacity", 0.15);
+    .attr("opacity", 0.25);
 
   // Company icon (clipped to circle)
   orgRows.append("image")
     .attr("xlink:href", d => "icons/" + (orgIconMap[d] || "google.png"))
-    .attr("x", iconX).attr("y", -12)
-    .attr("width", 24).attr("height", 24)
+    .attr("x", sidebarWidth - 40).attr("y", -14)
+    .attr("width", 28).attr("height", 28)
     .attr("clip-path", "url(#sidebar-icon-clip)");
 
   // Org name (right-aligned, left of icon)
@@ -357,15 +394,23 @@ function renderGraph(graph) {
       .attr("opacity", Math.random() * 0.04 + 0.01);
   }
 
-  // Lane backgrounds (alternating subtle warm tints)
+  // Lane backgrounds with subtle dividers
   const laneGroup = svg.append("g").attr("class", "lanes");
   orgList.forEach((org, i) => {
     const laneY = orgLaneY[org];
-    const opacity = i % 2 === 0 ? 0.015 : 0.025;
+    const opacity = i % 2 === 0 ? 0.018 : 0.032;
     laneGroup.append("rect")
       .attr("x", 0).attr("y", laneY - laneHeight / 2)
       .attr("width", canvasWidth).attr("height", laneHeight)
-      .attr("fill", "#000000").attr("opacity", opacity).attr("rx", 4);
+      .attr("fill", "#000000").attr("opacity", opacity);
+    // Horizontal divider at lane bottom
+    if (i < orgList.length - 1) {
+      laneGroup.append("line")
+        .attr("x1", 40).attr("x2", canvasWidth - 60)
+        .attr("y1", laneY + laneHeight / 2).attr("y2", laneY + laneHeight / 2)
+        .attr("stroke", "rgba(0,0,0,0.06)")
+        .attr("stroke-width", 0.5);
+    }
   });
 
   // Year grid lines (in content, synced with bottom bar)
@@ -407,9 +452,9 @@ function renderGraph(graph) {
   // SVG defs
   const svgDefs = svg.append("defs");
   svgDefs.append("filter").attr("id", "dropShadow").html(`
-    <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
-    <feOffset dx="0" dy="3" result="offsetblur"/>
-    <feFlood flood-color="#00000066"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+    <feOffset dx="0" dy="4" result="offsetblur"/>
+    <feFlood flood-color="#00000033"/>
     <feComposite in2="offsetblur" operator="in"/>
     <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
   `);
@@ -474,31 +519,31 @@ function renderGraph(graph) {
   // Per-node clipPath
   nodeElements.each(function (d) {
     svgDefs.append("clipPath").attr("id", `clip-${d.id}`)
-      .append("circle").attr("r", nodeRadius - 2);
+      .append("circle").attr("r", d.baseRadius - 2);
   });
 
   // Background circle (white for light theme icon contrast)
   nodeElements.append("circle")
-    .attr("r", nodeRadius)
+    .attr("r", d => d.baseRadius)
     .attr("fill", "#ffffff")
     .attr("stroke", d => d.orgColor)
-    .attr("stroke-width", 2)
+    .attr("stroke-width", d => 1.5 + (d.degree / maxDegree) * 1.5)
     .attr("stroke-opacity", 0.7);
 
   // Model icon (clipped to circle)
   nodeElements.append("image")
     .attr("class", "node-icon")
     .attr("xlink:href", d => "icons/" + d.image)
-    .attr("x", -(nodeRadius - 2))
-    .attr("y", -(nodeRadius - 2))
-    .attr("width", (nodeRadius - 2) * 2)
-    .attr("height", (nodeRadius - 2) * 2)
+    .attr("x", d => -(d.baseRadius - 2))
+    .attr("y", d => -(d.baseRadius - 2))
+    .attr("width", d => (d.baseRadius - 2) * 2)
+    .attr("height", d => (d.baseRadius - 2) * 2)
     .attr("clip-path", d => `url(#clip-${d.id})`);
 
   // Label
   nodeElements.append("text")
     .attr("class", "node-label")
-    .attr("dy", nodeRadius + 13)
+    .attr("dy", d => d.baseRadius + 13)
     .attr("text-anchor", "middle")
     .attr("font-size", "10px")
     .attr("font-family", "'Inter', sans-serif")
@@ -510,13 +555,13 @@ function renderGraph(graph) {
   // ── 12. Expanded-node detail popup ────────────────────────────────────────
   function updateNodeDetails(nodeSelection, d, showDetails) {
     nodeSelection.selectAll(".details").remove();
-    const r = showDetails ? expandedRadius : nodeRadius;
+    const r = showDetails ? expandedRadius : d.baseRadius;
     const imgR = r - 3;
 
     nodeSelection.select("circle")
-      .attr("r", r).attr("stroke-width", showDetails ? 2.5 : 2);
+      .attr("r", r).attr("stroke-width", showDetails ? 2.5 : 1.5 + (d.degree / maxDegree) * 1.5);
     nodeSelection.select("text.node-label")
-      .attr("dy", showDetails ? expandedRadius + 16 : nodeRadius + 13);
+      .attr("dy", showDetails ? expandedRadius + 16 : d.baseRadius + 13);
     nodeSelection.select("image.node-icon")
       .attr("x", -imgR).attr("y", -imgR)
       .attr("width", imgR * 2).attr("height", imgR * 2);
@@ -533,9 +578,9 @@ function renderGraph(graph) {
     const detailsRect = details.append("rect")
       .attr("x", -detailsWidth / 2).attr("y", 0)
       .attr("width", detailsWidth).attr("height", 140)
-      .attr("fill", "rgba(255, 255, 255, 0.95)")
-      .attr("stroke", d.orgColor).attr("stroke-opacity", 0.3)
-      .attr("stroke-width", 1).attr("rx", 10).attr("ry", 10)
+      .attr("fill", "rgba(255, 255, 255, 0.98)")
+      .attr("stroke", d.orgColor).attr("stroke-opacity", 0.5)
+      .attr("stroke-width", 1.5).attr("rx", 10).attr("ry", 10)
       .attr("filter", "url(#dropShadow)");
 
     const content = details.append("g").attr("transform", "translate(0, 12)");

@@ -152,23 +152,23 @@
 
         <!-- About popup -->
         <div id="about-popup" style="display:none; position:fixed; top:50%; left:50%;
-            transform:translate(-50%,-50%); z-index:300; background:rgba(12,16,32,0.96);
-            backdrop-filter:blur(16px); border:1px solid rgba(100,140,220,0.15);
+            transform:translate(-50%,-50%); z-index:300; background:#ffffff;
+            border:1px solid rgba(0,0,0,0.08);
             border-radius:14px; padding:24px 28px; max-width:380px;
-            box-shadow:0 8px 40px rgba(0,0,0,0.6); color:#8aa0cc;
+            box-shadow:0 4px 24px rgba(0,0,0,0.12); color:#1a1a1a;
             font-size:0.82em; line-height:1.7;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <span style="color:#c8d8f0; font-weight:600; font-size:1.1em;">About</span>
-                <button onclick="document.getElementById('about-popup').style.display='none'"
-                    style="background:none; border:none; color:#6a82a8; font-size:18px; cursor:pointer;">&times;</button>
+                <span style="color:#1a1a1a; font-weight:600; font-size:1.1em;">About</span>
+                <button onclick="document.getElementById('about-popup').style.display='none'; document.getElementById('about-overlay').style.display='none'"
+                    style="background:none; border:none; color:rgba(0,0,0,0.3); font-size:18px; cursor:pointer;">&times;</button>
             </div>
-            <p>This visualization maps the lineage of large language model research from the Transformer architecture (2017) to the frontier models of 2026.</p>
-            <p>Each row represents an organization. Nodes are placed by release date. Lines show derivation relationships.</p>
-            <p>Sources: arXiv, official model cards, and lab announcements.</p>
+            <p style="color:rgba(0,0,0,0.65);">This visualization maps the lineage of large language model research from the Transformer architecture (2017) to the frontier models of 2026.</p>
+            <p style="color:rgba(0,0,0,0.65);">Each row represents an organization. Nodes are placed by release date. Lines show derivation relationships.</p>
+            <p style="color:rgba(0,0,0,0.65);">Sources: arXiv, official model cards, and lab announcements.</p>
         </div>
         <div id="about-overlay" onclick="document.getElementById('about-popup').style.display='none';
             document.getElementById('about-overlay').style.display='none'"
-            style="display:none; position:fixed; inset:0; z-index:250; background:rgba(0,0,0,0.4);"></div>
+            style="display:none; position:fixed; inset:0; z-index:250; background:rgba(0,0,0,0.3);"></div>
 
         <script src="https://d3js.org/d3.v7.min.js"></script>
         <script src="script.js"></script>
